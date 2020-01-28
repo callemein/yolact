@@ -194,7 +194,7 @@ def runvideo(net: Yolact, path: str, out_path: str = None):
 
     video_detections = Detections()
 
-    for frame_idx in tqdm(range(0, 10)):
+    for frame_idx in tqdm(range(0, num_frames)):
         frame = vid.read()[1]
 
         frames, dets_out = run_network(transform_frame([frame]))
