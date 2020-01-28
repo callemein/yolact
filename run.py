@@ -46,6 +46,8 @@ def parse_args(argv=None):
                         help='Trained state_dict file path to open. If "interrupt", this will open the interrupt file.')
     parser.add_argument('--top_k', default=5, type=int,
                         help='Further restrict the number of predictions to parse')
+    parser.add_argument('--batch_num', default=1, type=int,
+                        help='Number of frames to batch')
     parser.add_argument('--cuda', default=True, type=str2bool,
                         help='Use cuda to evaulate model')
     parser.add_argument('--fast_nms', default=True, type=str2bool,
@@ -163,6 +165,19 @@ class Detections:
         with open(os.path.join(args.web_det_path, '%s.json' % cfg.name), 'w') as f:
             json.dump(output, f)
 
+def get_frames(vid, batch_num=1):
+    frames = []
+    frame_ids = []
+
+    current_vid_pos = round(vid.get(cv2.CAP_PROP_POS_FRAMES))
+    num_frames = round(vid.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    for i in range(min(batch_num, num_frames-current_vid_pos)):
+        frames.append(vid.read()[1])
+        frame_ids.append(i + current_vid_pos)
+
+    return frames, frame_ids
+
 def runvideo(net: Yolact, path: str, out_path: str = None):
     # If the input image size is constant, this make things faster (hence why we can use it in a video setting).
     cudnn.benchmark = True
@@ -173,7 +188,6 @@ def runvideo(net: Yolact, path: str, out_path: str = None):
         print('Could not open video "%s"' % path)
         exit(-1)
 
-    target_fps = round(vid.get(cv2.CAP_PROP_FPS))
     frame_width = round(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = round(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
     num_frames = round(vid.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -194,44 +208,48 @@ def runvideo(net: Yolact, path: str, out_path: str = None):
 
     video_detections = Detections()
 
-    for frame_idx in tqdm(range(0, num_frames)):
-        frame = vid.read()[1]
+    batch_num = args.batch_num
 
-        frames, dets_out = run_network(transform_frame([frame]))
+    for frame_batch_i in tqdm(range(0, round(num_frames/batch_num))):
+        frames, frame_ids = get_frames(vid, batch_num)
 
-        classes, scores, boxes, masks = postprocess(dets_out, frame_width, frame_height,
-                    score_threshold=args.score_threshold)
+        frames, dets_out = run_network(transform_frame(frames))
 
-        if classes.size(0) == 0:
-            return
+        for batch_idx in range(len(frame_ids)):
+            frame_idx = frame_ids[batch_idx]
 
-        classes = list(classes.cpu().numpy().astype(int))
+            t = postprocess(dets_out, frame_width, frame_height,
+                        batch_idx=batch_idx,
+                        score_threshold=args.score_threshold)
+            classes, scores, boxes, masks = t
 
-        if isinstance(scores, list):
-            box_scores = list(scores[0].cpu().numpy().astype(float))
-            mask_scores = list(scores[1].cpu().numpy().astype(float))
-        else:
-            scores = list(scores.cpu().numpy().astype(float))
-            box_scores = scores
-            mask_scores = scores
+            if classes.size(0) == 0:
+                return
 
-        masks = masks.view(-1, frame_height * frame_width).cuda()
-        boxes = boxes.cuda()
+            classes = list(classes.cpu().numpy().astype(int))
 
-        boxes = boxes.cpu().numpy()
-        masks = masks.view(-1, frame_height, frame_width).cpu().numpy()
-        for i in range(masks.shape[0]):
-            # Make sure that the bounding box actually makes sense and a mask was produced
-            if (boxes[i, 3] - boxes[i, 1]) * (boxes[i, 2] - boxes[i, 0]) > 0:
-                video_detections.add_bbox(frame_idx, classes[i], boxes[i, :], box_scores[i])
-                video_detections.add_mask(frame_idx, classes[i], masks[i, :, :], mask_scores[i])
+            if isinstance(scores, list):
+                box_scores = list(scores[0].cpu().numpy().astype(float))
+                mask_scores = list(scores[1].cpu().numpy().astype(float))
+            else:
+                scores = list(scores.cpu().numpy().astype(float))
+                box_scores = scores
+                mask_scores = scores
 
-        video_detections.dump()
+            masks = masks.view(-1, frame_height * frame_width).cuda()
+            boxes = boxes.cuda()
+
+            boxes = boxes.cpu().numpy()
+            masks = masks.view(-1, frame_height, frame_width).cpu().numpy()
+
+            for i in range(masks.shape[0]):
+                # Make sure that the bounding box actually makes sense and a mask was produced
+                if (boxes[i, 3] - boxes[i, 1]) * (boxes[i, 2] - boxes[i, 0]) > 0:
+                    video_detections.add_bbox(frame_idx, classes[i], boxes[i, :], box_scores[i])
+                    video_detections.add_mask(frame_idx, classes[i], masks[i, :, :], mask_scores[i])
 
 
     video_detections.dump()
-
-
 
 def run(net: Yolact):
     net.detect.use_fast_nms = args.fast_nms
