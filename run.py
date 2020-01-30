@@ -173,8 +173,10 @@ def get_frames(vid, batch_num=1):
     num_frames = round(vid.get(cv2.CAP_PROP_FRAME_COUNT))
 
     for i in range(min(batch_num, num_frames-current_vid_pos)):
-        frames.append(vid.read()[1])
-        frame_ids.append(i + current_vid_pos)
+        ret, img = vid.read()
+        if ret:
+            frames.append(img)
+            frame_ids.append(i + current_vid_pos)
 
     return frames, frame_ids
 
@@ -212,7 +214,6 @@ def runvideo(net: Yolact, path: str, out_path: str = None):
 
     for frame_batch_i in tqdm(range(0, round(num_frames/batch_num))):
         frames, frame_ids = get_frames(vid, batch_num)
-
         frames, dets_out = run_network(transform_frame(frames))
 
         for batch_idx in range(len(frame_ids)):
@@ -221,10 +222,11 @@ def runvideo(net: Yolact, path: str, out_path: str = None):
             t = postprocess(dets_out, frame_width, frame_height,
                         batch_idx=batch_idx,
                         score_threshold=args.score_threshold)
+
             classes, scores, boxes, masks = t
 
             if classes.size(0) == 0:
-                return
+                continue
 
             classes = list(classes.cpu().numpy().astype(int))
 
